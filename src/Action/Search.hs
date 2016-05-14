@@ -7,8 +7,10 @@ import Control.DeepSeq
 import Data.Maybe
 import qualified Data.Set as Set
 import Data.List.Extra
+import qualified Data.List as DL
 import Data.Functor.Identity
 import System.Directory
+import System.Console.CmdArgs.Verbosity
 
 import Output.Items
 import Output.Tags
@@ -20,7 +22,6 @@ import Input.Item
 import Action.CmdLine
 import General.Util
 
-
 -- -- generate all
 -- @tagsoup -- generate tagsoup
 -- @tagsoup filter -- search the tagsoup package
@@ -31,8 +32,8 @@ actionSearch Search{..} = replicateM_ repeat_ $ -- deliberately reopen the datab
     withSearch database $ \store ->
         if null compare_ then do
             (q, res) <- return $ search store $ parseQuery $ unwords query
-            whenLoud $ putStrLn $ "Query: " ++ unescapeHTML (renderQuery q)
-            let (shown, hidden) = splitAt count $ nubOrd $ map targetItem res
+            let queryString = unescapeHTML $ renderQuery q
+            whenLoud $ putStrLn $ "Query: " ++ queryString
             if null res then
                 putStrLn "No results found"
              else if info then do
@@ -44,8 +45,26 @@ actionSearch Search{..} = replicateM_ repeat_ $ -- deliberately reopen the datab
                     putStrLn (unwords packageModule)
                 putStrLn (unHTML targetDocs)
              else do
-                let toShow = if numbers && not info then addCounter shown else shown
-                putStr $ unlines $ map unHTML toShow
+                verbosity <- getVerbosity
+                let (shown, hidden) = splitAt count $ nubOrdOn targetItem res
+                    moduleStr r = case targetPackage r of
+                                  Nothing -> ""
+                                  Just _  -> case targetModule r of
+                                             Just (x, _) -> x ++ " "
+                                             Nothing     -> let es = expStr r
+                                                                ws = words es in
+                                                            case ws of
+                                                              [] -> "nomodule "
+                                                              x:[] -> x ++ " "
+                                                              _:y:_ -> y ++ " "
+                    linkStr r = if link then " -- " ++ targetURL r else ""
+                    ciStr r = maybe "CI" (const "") $ targetModule r -- NOTE: it looks like it's wrong! should be fixed if it causes any trouble.
+                    verbStr r s t = if Loud <= verbosity then " -- " ++ stringComparisonType s t ++ ciStr r else ""
+                    expStr r = unHTML $ targetItem r
+                    reToStr r = let es = expStr r in
+                                (moduleStr r) ++ es ++ verbStr r queryString es ++ linkStr r
+                    toShow = if numbers then addCounter else id
+                putStr $ unlines $ toShow $ map reToStr shown
                 when (hidden /= []) $ do
                     whenNormal $ putStrLn $ "-- plus more results not shown, pass --count=" ++ show (count+10) ++ " to see more"
         else do
@@ -55,6 +74,12 @@ actionSearch Search{..} = replicateM_ repeat_ $ -- deliberately reopen the datab
             putStr $ unlines $ searchTypesDebug store (parseType $ unwords query) (map parseType compare_)
 
     where unHTML = unescapeHTML . innerTextHTML
+
+stringComparisonType :: String -> String -> String
+stringComparisonType s t | s == t = "Exact"
+                         | DL.isPrefixOf s t = "Prefix"
+                         | DL.isSuffixOf s t = "Suffix"
+                         | otherwise = "Substr"
 
 addCounter :: [String] -> [String]
 addCounter = zipWith (\i x -> show i ++ ") " ++ x) [1..]
