@@ -36,7 +36,8 @@ actionSearch Search{..} = replicateM_ repeat_ $ -- deliberately reopen the datab
             if null res then
                 putStrLn "No results found"
              else if info then do
-                let Target{..} = head res
+                let validStartPos = max 1 $ min start $ length res
+                let Target{..} = res!!validStartPos
                 putStrLn (unHTML targetItem)
                 let packageModule = map fst $ catMaybes [targetPackage, targetModule]
                 unless (null packageModule) $ do

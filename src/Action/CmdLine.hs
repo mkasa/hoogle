@@ -24,6 +24,7 @@ data CmdLine
         ,info :: Bool
         ,database :: FilePath
         ,count :: Int
+        ,start :: Int
         ,query :: [String]
         ,repeat_ :: Int
         ,language :: Language
@@ -99,6 +100,7 @@ search_ = Search
     ,info = def &= help "Give extended information about the first result"
     ,database = def &= typFile &= help "Name of database to use (use .hoo extension)"
     ,count = 10 &= name "n" &= help "Maximum number of results to return"
+    ,start = 1 &= name "s" &= help "Start displaying results from this point on (1 based)Start displaying results from this point on (1 based)"
     ,query = def &= args &= typ "QUERY"
     ,repeat_ = 1 &= help "Number of times to repeat (for benchmarking)"
     ,language = enum [x &= explicit &= name (lower $ show x) &= help ("Work with " ++ show x) | x <- [minBound..maxBound]] &= groupname "Language"
