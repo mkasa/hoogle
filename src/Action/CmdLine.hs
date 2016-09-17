@@ -9,6 +9,7 @@ module Action.CmdLine(
 
 import System.Console.CmdArgs
 import System.Directory
+import System.Environment
 import System.FilePath
 import Data.List.Extra
 import Data.Version
@@ -66,9 +67,9 @@ data CmdLine
         }
       deriving (Data,Typeable,Show)
 
-getCmdLine :: IO CmdLine
-getCmdLine = do
-    args <- cmdArgsRun cmdLineMode
+getCmdLine :: [String] -> IO CmdLine
+getCmdLine args = do
+    args <- withArgs args $ cmdArgsRun cmdLineMode
 
     -- fill in the default database
     args <- if database args /= "" then return args else do
@@ -119,9 +120,9 @@ server = Server
     {port = 80 &= typ "INT" &= help "Port number"
     ,cdn = "" &= typ "URL" &= help "URL prefix to use"
     ,logs = "" &= opt "log.txt" &= typFile &= help "File to log requests to (defaults to stdout)"
-    ,local = False &= help "Allow following file:// links, restricts to 127.0.0.1"
+    ,local = False &= help "Allow following file:// links, restricts to 127.0.0.1  Set --host explicitely (including to '*' for any host) to override the localhost-only behaviour"
     ,scope = def &= help "Default scope to start with"
-    ,host = "*" &= help "Set the host to bind on (e.g., an ip address; '!4' for ipv4-only; '!6' for ipv6-only; default: '*' for any host)."
+    ,host = "" &= help "Set the host to bind on (e.g., an ip address; '!4' for ipv4-only; '!6' for ipv6-only; default: '*' for any host)."
     ,https = def &= help "Start an https server (use --cert and --key to specify paths to the .pem files)"
     ,cert = "cert.pem" &= typFile &= help "Path to the certificate pem file (when running an https server)"
     ,key = "key.pem" &= typFile &= help "Path to the key pem file (when running an https server)"

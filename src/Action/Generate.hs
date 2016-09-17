@@ -27,6 +27,7 @@ import Input.Haddock
 import Input.Download
 import Input.Reorder
 import Input.Set
+import Input.Settings
 import Input.Item
 import General.Util
 import General.Store
@@ -93,11 +94,11 @@ generate output metadata  = undefined
 
 type Download = String -> URL -> IO FilePath
 
-readHaskellOnline :: Timing -> Download -> IO (Map.Map String Package, Set.Set String, Source IO (String, URL, LStr))
-readHaskellOnline timing download = do
+readHaskellOnline :: Timing -> Settings -> Download -> IO (Map.Map String Package, Set.Set String, Source IO (String, URL, LStr))
+readHaskellOnline timing settings download = do
     stackage <- download "haskell-stackage.txt" "https://www.stackage.org/lts/cabal.config"
     platform <- download "haskell-platform.txt" "https://raw.githubusercontent.com/haskell/haskell-platform/master/hptool/src/Releases2015.hs"
-    ghcapi   <- download "haskell-ghcapi.txt" "https://downloads.haskell.org/~ghc/7.10.3/docs/html/libraries/ghc-7.10.3/ghc.txt"
+    ghcapi   <- download "haskell-ghcapi.txt" $ "https://downloads.haskell.org/~ghc/" ++ ghcApiVersion ++ "/docs/html/libraries/ghc-" ++ ghcApiVersion ++ "/ghc.txt"
     cabals   <- download "haskell-cabal.tar.gz" "https://hackage.haskell.org/packages/index.tar.gz"
     hoogles  <- download "haskell-hoogle.tar.gz" "https://hackage.haskell.org/packages/hoogle.tar.gz"
 
@@ -106,7 +107,7 @@ readHaskellOnline timing download = do
     setPlatform <- setPlatform platform
     setGHC <- setGHC platform
 
-    cbl <- timed timing "Reading Cabal" $ parseCabalTarball cabals
+    cbl <- timed timing "Reading Cabal" $ parseCabalTarball settings cabals
     let want = Set.insert "ghc" $ Set.unions [setStackage, setPlatform, setGHC]
     cbl <- return $ flip Map.mapWithKey cbl $ \name p ->
         p{packageTags =
@@ -120,17 +121,19 @@ readHaskellOnline timing download = do
             forM_ tar $ \(takeBaseName -> name, src) ->
                 yield (name, hackagePackageURL name, src)
             src <- liftIO $ strReadFile ghcapi
-            let url = "http://downloads.haskell.org/~ghc/7.10.3/docs/html/libraries/ghc-7.10.3/"
+            let url = "https://downloads.haskell.org/~ghc/" ++ ghcApiVersion ++ "/docs/html/libraries/ghc-" ++ ghcApiVersion ++ "/"
             yield ("ghc", url, lstrFromChunks [src])
     return (cbl, want, source)
 
 
 readHaskellDir :: Timing -> FilePath -> IO (Map.Map String Package, Set.Set String, Source IO (String, URL, LStr))
 readHaskellDir timing dir = do
-    packages <- map (takeBaseName &&& id) . filter ((==) ".txt" . takeExtension) <$> listFiles dir
+    packages <- map (takeBaseName &&& id) . filter ((==) ".txt" . takeExtension) <$> listFilesRecursive dir
     let source = forM_ packages $ \(name, file) -> do
             src <- liftIO $ strReadFile file
-            yield (name, hackagePackageURL name, lstrFromChunks [src])
+            dir <- liftIO $ canonicalizePath $ takeDirectory file
+            let url = "file://" ++ ['/' | not $ "/" `isPrefixOf` dir] ++ replace "\\" "/" dir ++ "/"
+            yield (name, url, lstrFromChunks [src])
     return (Map.fromList $ map ((,mempty{packageTags=[(T.pack "set",T.pack "all")]}) . fst) packages
            ,Set.fromList $ map fst packages, source)
 
@@ -144,9 +147,9 @@ readFregeOnline timing download = do
     return (Map.empty, Set.singleton "frege", source)
 
 
-readHaskellGhcpkg :: Timing -> IO (Map.Map String Package, Set.Set String, Source IO (String, URL, LStr))
-readHaskellGhcpkg timing = do
-    cbl <- timed timing "Reading ghc-pkg" readGhcPkg
+readHaskellGhcpkg :: Timing -> Settings -> IO (Map.Map String Package, Set.Set String, Source IO (String, URL, LStr))
+readHaskellGhcpkg timing settings = do
+    cbl <- timed timing "Reading ghc-pkg" $ readGhcPkg settings
     let source =
             forM_ (Map.toList cbl) $ \(name,Package{..}) -> whenJust packageDocs $ \docs -> do
                 let file = docs </> name <.> "txt"
@@ -168,10 +171,11 @@ actionGenerate g@Generate{..} = withTiming (if debug then Just $ replaceExtensio
     gcStats <- getGCStatsEnabled
 
     download <- return $ downloadInput timing insecure download (takeDirectory database)
+    settings <- loadSettings
     (cbl, want, source) <- case language of
-        Haskell | Just "" <- local_ -> readHaskellGhcpkg timing
+        Haskell | Just "" <- local_ -> readHaskellGhcpkg timing settings
                 | Just dir <- local_ -> readHaskellDir timing dir
-                | otherwise -> readHaskellOnline timing download
+                | otherwise -> readHaskellOnline timing settings download
         Frege | isJust local_ -> errorIO "No support for local Frege databases"
               | otherwise -> readFregeOnline timing download
     let (cblErrs, popularity) = packagePopularity cbl
@@ -186,9 +190,9 @@ actionGenerate g@Generate{..} = withTiming (if debug then Just $ replaceExtensio
             itemWarn <- newIORef 0
             let warning msg = do modifyIORef itemWarn succ; hPutStrLn warnings msg
 
-            let consume :: Conduit (Int, (String, URL, LStr)) IO (Maybe Target, Item)
+            let consume :: Conduit (Int, (String, URL, LStr)) IO (Maybe Target, [Item])
                 consume = awaitForever $ \(i, (pkg, url, body)) -> do
-                    timed timing ("[" ++ show i ++ "/" ++ show (Set.size want) ++ "] " ++ pkg) $
+                    timedOverwrite timing ("[" ++ show i ++ "/" ++ show (Set.size want) ++ "] " ++ pkg) $
                         parseHoogle (\msg -> warning $ pkg ++ ":" ++ msg) url body
 
             writeItems store $ \items -> do
@@ -212,10 +216,10 @@ actionGenerate g@Generate{..} = withTiming (if debug then Just $ replaceExtensio
                 itemWarn <- readIORef itemWarn
                 when (itemWarn > 0) $
                     putStrLn $ "Found " ++ show itemWarn ++ " warnings when processing items"
-                return xs
+                return [(a,b) | (a,bs) <- xs, b <- bs]
 
         itemsMb <- if not gcStats then return 0 else do performGC; GCStats{..} <- getGCStats; return $ currentBytesUsed `div` (1024*1024)
-        xs <- timed timing "Reodering items" $ return $! reorderItems (\s -> maybe 1 negate $ Map.lookup s popularity) xs
+        xs <- timed timing "Reodering items" $ return $! reorderItems settings (\s -> maybe 1 negate $ Map.lookup s popularity) xs
         timed timing "Writing tags" $ writeTags store (`Set.member` want) (\x -> maybe [] (map (both T.unpack) . packageTags) $ Map.lookup x cbl) xs
         timed timing "Writing names" $ writeNames store xs
         timed timing "Writing types" $ writeTypes store (if debug then Just $ dropExtension database else Nothing) xs

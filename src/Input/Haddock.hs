@@ -1,33 +1,33 @@
 {-# LANGUAGE ViewPatterns, PatternGuards, TupleSections, OverloadedStrings, Rank2Types, DeriveDataTypeable #-}
 
-module Input.Haddock(parseHoogle, fakePackage, input_hoogle_test) where
+module Input.Haddock(parseHoogle, fakePackage, input_haddock_test) where
 
 import Language.Haskell.Exts as HSE
 import Data.Char
 import Data.List.Extra
 import Data.Data
-import Data.Maybe
 import Input.Item
 import General.Util
 import Control.DeepSeq
 import Control.Monad.Trans.Class
 import General.Conduit
 import Control.Monad.Extra
+import Data.Generics.Uniplate.Data
 import General.Str
 
 
 -- | An entry in the Hoogle DB
 data Entry = EPackage String
            | EModule String
-           | EDecl Decl
+           | EDecl (Decl ())
              deriving (Data,Typeable,Show)
 
 
-fakePackage :: String -> String -> (Maybe Target, Item)
-fakePackage name desc = (Just $ Target (hackagePackageURL name) Nothing Nothing "package" (renderPackage name) desc, IPackage name)
+fakePackage :: String -> String -> (Maybe Target, [Item])
+fakePackage name desc = (Just $ Target (hackagePackageURL name) Nothing Nothing "package" (renderPackage name) desc, [IPackage name])
 
 -- | Given a file name (for errors), feed in lines to the conduit and emit either errors or items
-parseHoogle :: Monad m => (String -> m ()) -> URL -> LStr -> Producer m (Maybe Target, Item)
+parseHoogle :: Monad m => (String -> m ()) -> URL -> LStr -> Producer m (Maybe Target, [Item])
 parseHoogle warning url body = sourceLStr body =$= linesCR =$= zipFromC 1 =$= parserC warning =$= hierarchyC url =$= mapC (\x -> rnf x `seq` x)
 
 parserC :: Monad m => (String -> m ()) -> Conduit (Int, Str) m (Target, Entry)
@@ -60,20 +60,22 @@ reformat :: [Str] -> String
 reformat = unlines . map strUnpack
 
 
-hierarchyC :: Monad m => URL -> Conduit (Target, Entry) m (Maybe Target, Item)
+hierarchyC :: Monad m => URL -> Conduit (Target, Entry) m (Maybe Target, [Item])
 hierarchyC packageUrl = void $ mapAccumC f (Nothing, Nothing)
     where
-        f (pkg, mod) (t, EPackage x) = ((Just (x, url), Nothing), (Just t{targetURL=url}, IPackage x))
+        f (pkg, mod) (t, EPackage x) = ((Just (x, url), Nothing), (Just t{targetURL=url}, [IPackage x]))
             where url = targetURL t `orIfNull` packageUrl
-        f (pkg, mod) (t, EModule x) = ((pkg, Just (x, url)), (Just t{targetPackage=pkg, targetURL=url}, IModule x))
-            where url = targetURL t `orIfNull` hackageModuleURL x
+        f (pkg, mod) (t, EModule x) = ((pkg, Just (x, url)), (Just t{targetPackage=pkg, targetURL=url}, [IModule x]))
+            where url = targetURL t `orIfNull` (if isGhc then ghcModuleURL x else hackageModuleURL x)
         f (pkg, mod) (t, EDecl i@InstDecl{}) = ((pkg, mod), (Nothing, hseToItem_ i))
         f (pkg, mod) (t, EDecl x) = ((pkg, mod), (Just t{targetPackage=pkg, targetModule=mod, targetURL=url}, hseToItem_ x))
             where url = targetURL t `orIfNull` case x of
                             _ | [n] <- declNames x -> hackageDeclURL (isTypeSig x) n
                               | otherwise -> ""
 
-        hseToItem_ x = fromMaybe (error $ "hseToItem failed, " ++ pretty x) $ hseToItem x
+        isGhc = "~ghc" `isInfixOf` packageUrl || "/" `isSuffixOf` packageUrl
+
+        hseToItem_ x = hseToItem x `orIfNull` error ("hseToItem failed, " ++ pretty x)
         infix 1 `orIfNull`
         orIfNull x y = if null x then y else x
 
@@ -130,32 +132,34 @@ fixLine x | "class " `isPrefixOf` x = fst $ breakOn " where " x
 fixLine x = x
 
 
-readItem :: String -> Maybe Decl
+readItem :: String -> Maybe (Decl ())
 readItem x | ParseOk y <- myParseDecl x = Just $ unGADT y
 readItem x -- newtype
     | Just x <- stripPrefix "newtype " x
-    , ParseOk (DataDecl a _ c d e f g) <- fmap unGADT $ myParseDecl $ "data " ++ x
-    = Just $ DataDecl a NewType c d e f g
+    , ParseOk (DataDecl an _ b c d e) <- fmap unGADT $ myParseDecl $ "data " ++ x
+    = Just $ DataDecl an (NewType ()) b c d e
 readItem x -- constructors
-    | ParseOk (GDataDecl _ _ _ _ _ _ [GadtDecl s name _ ty] _) <- myParseDecl $ "data Data where " ++ x
-    , let f (TyBang _ (TyParen x@TyApp{})) = x
-          f (TyBang _ x) = x
+    | ParseOk (GDataDecl _ _ _ _ _ [GadtDecl s name _ ty] _) <- myParseDecl $ "data Data where " ++ x
+    , let f (TyBang _ _ _ (TyParen _ x@TyApp{})) = x
+          f (TyBang _ _ _ x) = x
           f x = x
     = Just $ TypeSig s [name] $ applyFun1 $ map f $ unapplyFun ty
 readItem ('(':xs) -- tuple constructors
     | (com,')':rest) <- span (== ',') xs
-    , ParseOk (TypeSig s [Ident _] ty) <- myParseDecl $ replicate (length com + 2) 'a' ++ rest
-    = Just $ TypeSig s [Ident $ '(':com++")"] ty
+    , ParseOk (TypeSig s [Ident{}] ty) <- myParseDecl $ replicate (length com + 2) 'a' ++ rest
+    = Just $ TypeSig s [Ident s $ '(':com++")"] ty
 readItem (stripPrefix "data (" -> Just xs)  -- tuple data type
     | (com,')':rest) <- span (== ',') xs
-    , ParseOk (DataDecl a b c _ e f g) <- fmap unGADT $ myParseDecl $
+    , ParseOk (DataDecl a b c d e f) <- fmap unGADT $ myParseDecl $
         "data " ++ replicate (length com + 2) 'A' ++ rest
-    = Just $ DataDecl a b c (Ident $ '(':com++")") e f g
+    = Just $ DataDecl a b c (transform (op $ '(':com++")") d) e f
+    where op s DHead{} = DHead () $ Ident () s
+          op s x = x
 readItem _ = Nothing
 
-myParseDecl = parseDeclWithMode parseMode -- partial application, to share the initialisation cost
+myParseDecl = fmap (fmap $ const ()) . parseDeclWithMode parseMode -- partial application, to share the initialisation cost
 
-unGADT (GDataDecl a b c d e _ [] f) = DataDecl a b c d e [] f
+unGADT (GDataDecl a b c d _  [] e) = DataDecl a b c d [] e
 unGADT x = x
 
 prettyItem :: Entry -> String
@@ -164,8 +168,8 @@ prettyItem (EModule x) = "module " ++ x
 prettyItem (EDecl x) = pretty x
 
 
-input_hoogle_test :: IO ()
-input_hoogle_test = testing "Input.Hoogle.parseLine" $ do
+input_haddock_test :: IO ()
+input_haddock_test = testing "Input.Haddock.parseLine" $ do
     let a === b | fmap (map prettyItem) (parseLine a) == Right [b] = putChar '.'
                 | otherwise = error $ show (a,b,parseLine a, fmap (map prettyItem) $ parseLine a)
     let test a = a === a

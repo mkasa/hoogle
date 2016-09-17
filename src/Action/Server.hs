@@ -22,6 +22,7 @@ import Data.Time.Calendar
 import System.IO.Unsafe
 import Numeric.Extra
 import GHC.Stats
+import System.Info.Extra
 
 import Output.Tags
 import Query
@@ -35,6 +36,8 @@ import Action.Search
 import Action.CmdLine
 import Control.Applicative
 import Prelude
+
+import qualified Data.Aeson as JSON
 
 
 actionServer :: CmdLine -> IO ()
@@ -90,6 +93,7 @@ replyServer log local store cdn htmlDir scope = \Input{..} -> case inputURL of
                         ,("robots",if any isQueryScope q then "none" else "index")]
                     | otherwise -> OutputString <$> templateRender templateHome []
             Just "body" -> OutputString <$> if null qSource then templateRender templateEmpty [] else return $ lstrPack body
+            Just "json" -> return $ OutputJSON $ JSON.encode $ take 100 results
             Just m -> return $ OutputFail $ lstrPack $ "Mode " ++ m ++ " not (currently) supported"
     ["plugin","jquery.js"] -> OutputFile <$> JQuery.file
     ["plugin","jquery.flot.js"] -> OutputFile <$> Flot.file Flot.Flot
@@ -98,7 +102,7 @@ replyServer log local store cdn htmlDir scope = \Input{..} -> case inputURL of
         now <- getCurrentTime
         summ <- logSummary log
         let errs = sum [summaryErrors | Summary{..} <- summ, summaryDate >= pred (utctDay now)]
-        let alive = (now `subtractTime` spawned) / (24 * 60 * 60)
+        let alive = fromRational $ toRational $ (now `diffUTCTime` spawned) / (24 * 60 * 60)
         let s = show errs ++ " errors since yesterday, running for " ++ showDP 2 alive ++ " days."
         return $ if errs == 0 && alive < 1.5 then OutputString $ lstrPack $ "Happy. " ++ s else OutputFail $ lstrPack $ "Sad. " ++ s
     ["log"] -> do
@@ -112,7 +116,7 @@ replyServer log local store cdn htmlDir scope = \Input{..} -> case inputURL of
          else
             return $ OutputFail $ lstrPack "GHC Statistics is not enabled, restart with +RTS -T"
     "file":xs | local -> do
-        let x = intercalate "/" xs
+        let x = ['/' | not isWindows] ++ intercalate "/" xs
         return $ OutputFile $ x ++ (if hasTrailingPathSeparator x then "index.html" else "")
     xs ->
         -- avoid "" and ".." in the URLs, since they could be trying to browse on the server

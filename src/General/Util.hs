@@ -3,6 +3,7 @@
 module General.Util(
     URL,
     pretty, parseMode, applyType, applyFun1, unapplyFun, fromName, fromQName, fromTyVarBind, declNames, isTypeSig,
+    fromDeclHead, fromContext, fromIParen, fromInstHead,
     tarballReadFiles,
     isUpper1, isAlpha1,
     splitPair, joinPair,
@@ -17,7 +18,8 @@ module General.Util(
     readMaybe,
     exitFail,
     prettyTable,
-    hackagePackageURL, hackageModuleURL, hackageDeclURL,
+    ghcApiVersion,
+    hackagePackageURL, hackageModuleURL, hackageDeclURL, ghcModuleURL,
     minimum', maximum', minimumBy', maximumBy',
     general_util_test
     ) where
@@ -28,6 +30,7 @@ import Data.List.Extra
 import Data.Char
 import Data.Either.Extra
 import Data.Monoid
+import Data.Tuple.Extra
 import Control.Monad.Extra
 import qualified Data.ByteString.Lazy as LBS
 import qualified Data.Map as Map
@@ -50,8 +53,11 @@ import System.Locale
 import Prelude
 
 
+-- | A URL, complete with a @https:@ prefix.
 type URL = String
 
+ghcApiVersion :: String
+ghcApiVersion = "8.0.1"
 
 exitFail :: String -> IO ()
 exitFail msg = do
@@ -59,15 +65,7 @@ exitFail msg = do
     exitFailure
 
 pretty :: Pretty a => a -> String
-pretty = unwordsWords . prettyPrint
-
--- | Fused version of @unwords . words@ which runs quite a bit faster
-unwordsWords :: String -> String
-unwordsWords = f . dropWhile isSpace
-    where
-        f (x:xs) | isSpace x = case dropWhile isSpace xs of [] -> []; x:xs -> ' ' : x : f xs
-                 | otherwise = x : f xs
-        f [] = []
+pretty = prettyPrintWithMode defaultMode{layout=PPNoLayout}
 
 
 parseMode :: ParseMode
@@ -76,51 +74,73 @@ parseMode = defaultParseMode{extensions=map EnableExtension es}
                ,TypeFamilies,FlexibleContexts,FunctionalDependencies,ImplicitParams,MagicHash,UnboxedTuples
                ,ParallelArrays,UnicodeSyntax,DataKinds,PolyKinds]
 
-applyType :: Type -> [Type] -> Type
-applyType x (t:ts) = applyType (TyApp x t) ts
+applyType :: Type a -> [Type a] -> Type a
+applyType x (t:ts) = applyType (TyApp (ann t) x t) ts
 applyType x [] = x
 
-applyFun1 :: [Type] -> Type
+applyFun1 :: [Type a] -> Type a
 applyFun1 [x] = x
-applyFun1 (x:xs) = TyFun x $ applyFun1 xs
+applyFun1 (x:xs) = TyFun (ann x) x $ applyFun1 xs
 
-unapplyFun :: Type -> [Type]
-unapplyFun (TyFun x y) = x : unapplyFun y
+unapplyFun :: Type a -> [Type a]
+unapplyFun (TyFun _ x y) = x : unapplyFun y
 unapplyFun x = [x]
 
 
-fromName :: Name -> String
-fromName (Ident x) = x
-fromName (Symbol x) = x
+fromName :: Name a -> String
+fromName (Ident _ x) = x
+fromName (Symbol _ x) = x
 
-fromQName :: QName -> String
-fromQName (Qual _ x) = fromName x
-fromQName (UnQual x) = fromName x
-fromQName (Special UnitCon) = "()"
-fromQName (Special ListCon) = "[]"
-fromQName (Special FunCon) = "->"
-fromQName (Special (TupleCon box n)) = "(" ++ h ++ replicate n ',' ++ h ++ ")"
+fromQName :: QName a -> String
+fromQName (Qual _ _ x) = fromName x
+fromQName (UnQual _ x) = fromName x
+fromQName (Special _ UnitCon{}) = "()"
+fromQName (Special _ ListCon{}) = "[]"
+fromQName (Special _ FunCon{}) = "->"
+fromQName (Special _ (TupleCon _ box n)) = "(" ++ h ++ replicate n ',' ++ h ++ ")"
     where h = ['#' | box == Unboxed]
-fromQName (Special UnboxedSingleCon) = "(##)"
-fromQName (Special Cons) = ":"
+fromQName (Special _ UnboxedSingleCon{}) = "(##)"
+fromQName (Special _ Cons{}) = ":"
 
+fromContext :: Context a -> [Asst a]
+fromContext (CxSingle _ x) = [x]
+fromContext (CxTuple _ xs) = xs
+fromContext _ = []
 
-fromTyVarBind :: TyVarBind -> Name
-fromTyVarBind (KindedVar x _) = x
-fromTyVarBind (UnkindedVar x) = x
+fromIParen :: InstRule a -> InstRule a
+fromIParen (IParen _ x) = fromIParen x
+fromIParen x = x
 
-declNames :: Decl -> [String]
+fromTyVarBind :: TyVarBind a -> Name a
+fromTyVarBind (KindedVar _ x _) = x
+fromTyVarBind (UnkindedVar _ x) = x
+
+fromDeclHead :: DeclHead a -> (Name a, [TyVarBind a])
+fromDeclHead (DHead _ n) = (n, [])
+fromDeclHead (DHInfix _ x n) = (n, [x])
+fromDeclHead (DHParen _ x) = fromDeclHead x
+fromDeclHead (DHApp _ dh x) = second (++[x]) $ fromDeclHead dh
+
+fromInstHead :: InstHead a -> (QName a, [Type a])
+fromInstHead (IHCon _ n) = (n, [])
+fromInstHead (IHInfix _ x n) = (n, [x])
+fromInstHead (IHParen _ x) = fromInstHead x
+fromInstHead (IHApp _ ih x) = second (++[x]) $ fromInstHead ih
+
+declNames :: Decl a -> [String]
 declNames x = map fromName $ case x of
-    TypeDecl _ name _ _ -> [name]
-    DataDecl _ _ _ name _ _ _ -> [name]
-    GDataDecl _ _ _ name _ _ _ _ -> [name]
-    TypeFamDecl _ name _ _ -> [name]
-    DataFamDecl _ _ name _ _ -> [name]
-    ClassDecl _ _ name _ _ _ -> [name]
+    TypeDecl _ hd _ -> f hd
+    DataDecl _ _ _ hd _ _ -> f hd
+    GDataDecl _ _ _ hd _ _ _ -> f hd
+    TypeFamDecl _ hd _ _ -> f hd
+    DataFamDecl _ _ hd _ -> f hd
+    ClassDecl _ _ hd _ _ -> f hd
     TypeSig _ names _ -> names
     _ -> []
+    where f x = [fst $ fromDeclHead x]
 
-isTypeSig :: Decl -> Bool
+
+isTypeSig :: Decl a -> Bool
 isTypeSig TypeSig{} = True
 isTypeSig _ = False
 
@@ -282,7 +302,10 @@ hackagePackageURL :: String -> URL
 hackagePackageURL x = "https://hackage.haskell.org/package/" ++ x
 
 hackageModuleURL :: String -> URL
-hackageModuleURL x = "/docs/" ++ replace "." "-" x ++ ".html"
+hackageModuleURL x = "/docs/" ++ ghcModuleURL x
+
+ghcModuleURL :: String -> URL
+ghcModuleURL x = replace "." "-" x ++ ".html"
 
 hackageDeclURL :: Bool -> String -> URL
 hackageDeclURL typesig x = "#" ++ (if typesig then "v" else "t") ++ ":" ++ concatMap f x
@@ -321,5 +344,3 @@ general_util_test = do
         splitPair "-" "module-" === ("module","")
     testing_ "General.Util.inRanges" $ do
         quickCheck $ \(x :: Int8) xs -> inRanges xs x == any (`inRange` x) xs
-    testing_ "General.Util.unwordsWords" $ do
-        quickCheck $ \xs -> unwords (words xs) == unwordsWords xs

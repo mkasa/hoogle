@@ -1,5 +1,19 @@
 Changelog for Hoogle
 
+5.0.4
+    #184, use file URLs for local docs
+    #183, make --local look for .txt files recursively
+5.0.3
+    #181, use the proper network constraints
+    Avoid deprecated Aeson modules
+5.0.2
+    Move to haskell-src-exts-1.18
+5.0.1
+    #178, support the --link argument
+    #178, add module names to results on the command line
+    #177, require containers 0.5 or above
+5.0
+    #172, make sure --local links work on Linux
     #116, store data files in getAppUserDataDirectory by default
     G472, be robust to corrupt Hoogle files
     G521, make sure it works with inverted color preferences

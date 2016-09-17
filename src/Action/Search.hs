@@ -34,6 +34,11 @@ actionSearch Search{..} = replicateM_ repeat_ $ -- deliberately reopen the datab
             (q, res) <- return $ search store $ parseQuery $ unwords query
             let queryString = unescapeHTML $ renderQuery q
             whenLoud $ putStrLn $ "Query: " ++ queryString
+            let disp Target{..} = unwords $
+                    fmap fst (maybeToList targetModule) ++
+                    [targetItem] ++
+                    ["-- " ++ targetURL | link]
+            let (shown, hidden) = splitAt count $ nubOrd $ map disp res
             if null res then
                 putStrLn "No results found"
              else if info then do
@@ -157,6 +162,7 @@ action_search_test sample database = testing "Action.Search.search" $ withSearch
         "Ord a => [a] -> [a]" === hackage "base/docs/Data-List.html#v:sort"
         "ShakeOptions -> Int" === hackage "shake/docs/Development-Shake.html#v:shakeThreads"
         "is:module" === hackage "base/docs/Prelude.html"
+        "visibleDataCons" === ("https://downloads.haskell.org/~ghc/" ++ ghcApiVersion ++ "/docs/html/libraries/ghc-" ++ ghcApiVersion ++ "/TyCon.html#v:visibleDataCons")
 
         let tags = completionTags store
         let asserts b x = if b then putChar '.' else error $ "Assertion failed, got False for " ++ x

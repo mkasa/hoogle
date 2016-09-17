@@ -1,7 +1,7 @@
 cabal-version:      >= 1.10
 build-type:         Simple
 name:               hoogle
-version:            5.0
+version:            5.0.4
 license:            BSD3
 license-file:       LICENSE
 category:           Development
@@ -23,7 +23,7 @@ extra-source-files:
     cbits/*.h
     cbits/*.c
 data-files:
-    misc/cabal-rename.txt
+    misc/settings.txt
     html/*.js
     html/*.png
     html/*.css
@@ -37,13 +37,22 @@ source-repository head
     type:     git
     location: https://github.com/ndmitchell/hoogle.git
 
-executable hoogle
-    main-is:            Main.hs
+flag network-uri
+    description: Get Network.URI from the network-uri package
+    default: True
+
+library
     hs-source-dirs:     src
-    default-language: Haskell98
+    default-language:   Haskell98
+
+    if flag(network-uri)
+        build-depends: network-uri >= 2.6, network >= 2.6
+    else
+        build-depends: network-uri < 2.6, network < 2.6
 
     build-depends:
         QuickCheck,
+        aeson,
         base > 4 && < 5,
         binary,
         bytestring,
@@ -51,23 +60,22 @@ executable hoogle
         conduit,
         conduit-extra,
         connection,
-        containers,
+        containers >= 0.5,
         deepseq,
         directory,
         extra >= 1.4,
         filepath,
-        haskell-src-exts >= 1.16 && < 1.18,
+        haskell-src-exts >= 1.18 && < 1.19,
         http-conduit,
         http-types,
         js-flot,
         js-jquery,
         mmap,
-        network,
-        network-uri,
         old-locale,
         process,
         resourcet,
         tar,
+        template-haskell,
         text,
         time,
         transformers,
@@ -86,7 +94,10 @@ executable hoogle
     install-includes: include.h
     cc-options:       -std=c99
 
-    ghc-options:      -fno-state-hack -threaded
+    ghc-options:      -fno-state-hack
+
+    exposed-modules:
+        Hoogle
 
     other-modules:
         Paths_hoogle
@@ -101,6 +112,7 @@ executable hoogle
         Input.Item
         Input.Reorder
         Input.Set
+        Input.Settings
         Output.Items
         Output.Names
         Output.Tags
@@ -115,3 +127,13 @@ executable hoogle
         General.Timing
         General.Util
         General.Web
+
+
+executable hoogle
+    main-is:            src/Main.hs
+    default-language:   Haskell98
+    ghc-options:        -threaded
+
+    build-depends:
+        base > 4 && < 5,
+        hoogle
